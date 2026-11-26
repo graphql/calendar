@@ -4,10 +4,11 @@
   "type": "module",
   "dependencies": {
     "googleapis": "^144.0.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "wgutils": "^2.3.1"
   },
   "engines": {
-    "node": "24.x",
+    "node": "^24.2.0",
     "npm": "^11.17.0"
   },
   "packageManager": "npm@11.17.0",
@@ -16,13 +17,16 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "validate": "node scripts/sync.ts --validate",
-    "sync": "node scripts/sync.ts"
+    "sync": "node scripts/sync.ts",
+    "generate:wg": "node scripts/generate-wg.ts",
+    "test": "node --test scripts/*.test.ts"
   },
   "devDependencies": {
     "@tsconfig/node-ts": "^23.6.5",
     "@tsconfig/node24": "^24.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.19.2",
+    "memfs": "^4.80.1",
     "prettier": "3.10.1",
     "typescript": "^7.0.2"
   },

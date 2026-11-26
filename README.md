@@ -48,7 +48,7 @@ link: https://github.com/graphql/working-sessions
 | `description` | Free text description.                                                                                                                                                       |
 | `link`        | `http(s)` URL with more information (agenda, notes, ...). It is also appended to the calendar event description.                                                             |
 
-The calendar event description starts with the type and, if set, the host:
+For hand-authored events, the calendar description starts with the type and, if set, the host:
 
 ```
 type: conference
@@ -113,3 +113,13 @@ This has two benefits:
 
 - **No full rebuild.** The calendar is never wiped and recreated from scratch: a push that touches one file makes one or two API calls, whatever the number of events in the repository.
 - **Events created outside this repository keep working.** The script only ever touches the event IDs it computes from files in `calendar/`. Events added directly in Google Calendar have other IDs, so they are never modified or deleted by the sync.
+
+## Working group agendas
+
+Run `npm ci` and `npm run generate:wg` at the repository root with Node 24. The generator clones and refreshes the eleven working group repositories under the gitignored `repos/` directory. It uses the calendar repository's installation of wgutils and each checkout's configuration, including nested agenda directories. Review the changes with `git status` and run `npm run validate`. Local generation requires no Google credentials.
+
+Generated WG descriptions are synced verbatim. They open with the “Be first” notice when applicable, followed by the Zoom password if the agenda provides one.
+
+The importer covers upcoming meetings through the end of the third following UTC month. It marks files with their source path and removes future generated events when their agenda disappears or wgutils recognizes a cancellation. The paired optional fields `startUtc` and `endUtc` preserve exact instants alongside WG-local dates and times.
+
+The agenda refresh workflow runs at 00:17 and 12:17 UTC and supports manual dispatch on main. Generation runs with read-only repository access. It passes YAML edits and deletions under `calendar/` to a fresh publishing runner through a JSON job output. The publisher validates the entries and pushes changes to main. A separate job syncs that exact commit against its parent. If Google Calendar returns an error, use “Re-run failed jobs” to retry the published diff. The job needs permission to push to main.

@@ -1,0 +1,96 @@
+name: Refresh working group agendas
+
+on:
+  schedule:
+    - cron: '17 0,12 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: calendar-cron
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      changes: ${{ steps.proposal.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: repos/
+          key: wg-checkouts-v1-${{ github.run_id }}
+          restore-keys: wg-checkouts-v1-
+      - run: npm ci --no-audit --no-fund
+      - run: npm run generate:wg
+      - name: Collect calendar YAML changes
+        id: proposal
+        run: |
+          changes=$(node scripts/calendar-changes.ts propose)
+          echo "changes=$changes" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: generate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      revision: ${{ steps.commit.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      - run: node scripts/calendar-changes.ts apply
+        env:
+          CALENDAR_CHANGES: ${{ needs.generate.outputs.changes }}
+      - run: npm run validate
+      - name: Commit changed calendar entries
+        id: commit
+        run: |
+          git add -- calendar/
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Refresh working group calendar events'
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Push the generated commit
+        if: steps.commit.outputs.revision != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git push origin HEAD:main
+
+  sync:
+    needs: publish
+    if: needs.publish.outputs.revision != ''
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.revision }}
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      - name: Sync the published commit
+        env:
+          BASE_SHA: HEAD^
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+        run: npm run sync

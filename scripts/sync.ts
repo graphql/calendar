@@ -9,11 +9,12 @@ import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { google } from 'googleapis'
+import { generatedMarker, localTime } from './wg-event.ts'
 import yaml from 'js-yaml'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const calendarDir = join(repoRoot, 'calendar')
-const OPTIONAL_FIELDS = ['endDay', 'hostedBy']
+const OPTIONAL_FIELDS = ['endDay', 'hostedBy', 'startUtc', 'endUtc']
 const FIELDS = ['startTime', 'endTime', 'timeZone', 'type', 'title', 'location', 'description', 'link'] as const
 const TYPES = ['conference', 'working group', 'workshop', 'meetup', 'meeting']
 
@@ -23,6 +24,9 @@ type CalendarEvent = RequiredFields & {
   date: string
   slug: string
   endDay: string
+  startUtc?: string
+  endUtc?: string
+  generated: boolean
   hostedBy?: string
 }
 type InvalidEvent = { path: string; errors: string[] }
@@ -75,15 +79,25 @@ function parsePath(path: string) {
   return { date: `${y}-${mo}-${d}`, slug }
 }
 
-function parseEvent(file: string): CalendarEvent | InvalidEvent {
-  const path = relative(repoRoot, file)
+export function parseEvent(file: string, logicalPath?: string): CalendarEvent | InvalidEvent {
+  const path = logicalPath ?? relative(repoRoot, file)
+  try {
+    return parseEventContents(readFileSync(file, 'utf8'), path)
+  } catch (e) {
+    return { path, errors: [String(e)] }
+  }
+}
+
+export function parseEventContents(contents: string, path: string): CalendarEvent | InvalidEvent {
   const errors: string[] = []
   const { date, slug, error } = parsePath(path)
   if (error) errors.push(error)
 
+  let generated: boolean
   let data: unknown
   try {
-    data = yaml.load(readFileSync(file, 'utf8'))
+    generated = contents.startsWith(generatedMarker)
+    data = yaml.load(contents)
   } catch (e) {
     return { path, errors: [...errors, `invalid YAML: ${e instanceof Error ? e.message : String(e)}`] }
   }
@@ -119,11 +133,25 @@ function parseEvent(file: string): CalendarEvent | InvalidEvent {
       endDay = data.endDay
     }
   }
-  if (endDay === date && time.test(data.startTime) && time.test(data.endTime) && data.endTime <= data.startTime) {
+  if (data.startUtc === undefined && endDay === date && time.test(data.startTime) && time.test(data.endTime) && data.endTime <= data.startTime) {
     errors.push('"endTime" must be after "startTime" (use "endDay" for events that end on a later day)')
   }
   try {
     new Intl.DateTimeFormat('en', { timeZone: data.timeZone })
+    if (data.startUtc !== undefined || data.endUtc !== undefined) {
+      for (const [value, day, time] of [
+        [data.startUtc, date, data.startTime],
+        [data.endUtc, endDay, data.endTime],
+      ]) {
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || new Date(value).toJSON() !== value) {
+          errors.push('startUtc and endUtc must both be quoted UTC ISO timestamps')
+          continue
+        }
+        const local = localTime(value, data.timeZone)
+        if (local.date !== day || local.time !== time) errors.push('UTC timestamp differs from the local date or time')
+      }
+      if (String(data.endUtc) <= String(data.startUtc)) errors.push('endUtc must be later than startUtc')
+    }
   } catch {
     errors.push(`"timeZone" must be an IANA time zone such as "Europe/Paris", got "${data.timeZone}"`)
   }
@@ -135,7 +163,7 @@ function parseEvent(file: string): CalendarEvent | InvalidEvent {
   }
   if (errors.length) return { path, errors }
 
-  return { ...data, path, date, slug, endDay, hostedBy }
+  return { ...data, path, date, slug, endDay, hostedBy, generated }
 }
 
 // Google event IDs: 5-1024 chars of a-v and 0-9. A hex digest fits.
@@ -149,10 +177,10 @@ function toGoogleEvent(e: CalendarEvent) {
     id: eventId(e.date, e.slug),
     summary: e.title.trim(),
     location: e.location.trim(),
-    description: `${header.join('\n')}\n\n${e.description.trim()}\n\n${e.link}`,
+    description: e.generated ? e.description.trim() : `${header.join('\n')}\n\n${e.description.trim()}\n\n${e.link}`,
     source: { title: 'GraphQL Working Sessions', url: e.link },
-    start: { dateTime: `${e.date}T${e.startTime}:00`, timeZone: e.timeZone },
-    end: { dateTime: `${e.endDay}T${e.endTime}:00`, timeZone: e.timeZone },
+    start: { dateTime: e.startUtc ?? `${e.date}T${e.startTime}:00`, timeZone: e.timeZone },
+    end: { dateTime: e.endUtc ?? `${e.endDay}T${e.endTime}:00`, timeZone: e.timeZone },
   }
 }
 
@@ -231,13 +259,15 @@ function failOnInvalid(events: (CalendarEvent | InvalidEvent)[]): asserts events
   }
 }
 
-if (process.argv.includes('--validate')) {
-  const events = listEventFiles().map(parseEvent)
-  failOnInvalid(events)
-  console.log(`${events.length} event file(s) valid`)
-} else if (process.env.BASE_SHA) {
-  await syncIncremental(process.env.BASE_SHA)
-} else {
-  console.error('usage: npm run validate, or BASE_SHA=<git-ref> npm run sync')
-  process.exit(2)
+if (import.meta.main) {
+  if (process.argv.includes('--validate')) {
+    const events = listEventFiles().map((file) => parseEvent(file))
+    failOnInvalid(events)
+    console.log(`${events.length} event file(s) valid`)
+  } else if (process.env.BASE_SHA) {
+    await syncIncremental(process.env.BASE_SHA)
+  } else {
+    console.error('usage: npm run validate, or BASE_SHA=<git-ref> npm run sync')
+    process.exit(2)
+  }
 }
