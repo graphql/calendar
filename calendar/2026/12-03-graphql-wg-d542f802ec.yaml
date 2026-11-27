@@ -15,6 +15,7 @@ description: |-
   How to join: https://graphql.org/community/contribute/project-meetings/
 
   Agenda topics:
+  - New WG/Foundation calendar system
   - Empty input objects: advance to RFC 2
   - 2027 maintenance grants
   - onError: "NULL"
